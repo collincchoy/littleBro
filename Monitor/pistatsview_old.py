@@ -4,7 +4,6 @@ import json
 import sys
 from pymongo import MongoClient
 import RPi.GPIO as GPIO
-import pika
 import time
 
 def getClaOptions():
@@ -82,29 +81,12 @@ def main():
 		# Setup
 		initGpio()
 		db = MongoClient().assignment2_db
-		args = getClaOptions()
 		
-		# Set up connection to send data to repository RabbitMQ queue
-		login, password = args.credentials.split(":")
-		serverCredentials = pika.PlainCredentials(login, password)
-		serverParameters = pika.ConnectionParameters(args.messageBroker, 5672, args.virtualHost, serverCredentials)
-		serverConnection = pika.BlockingConnection(serverParameters)
-		serverChannel = serverConnection.channel()
-		serverChannel.queue_declare(queue=args.routingKey)
-		serverChannel.exchange_declare(exchange='pi_utilization', type='direct')
-		serverChannel.queue_bind(exchange='pi_utilization', queue=args.routingKey)
-		
-		def callback(serverChannel, method, properties, body):
-			
-			payload = json.loads(body.decode('utf-8'))
-			db.utilData.insert(payload)
-			changeThresholdLed(payload['cpu'])
+		payload = json.loads(consumeFromQueue())
+		db.utilData.insert(payload)
+		changeThresholdLed(payload['cpu'])
 
-			printMonitorOutput(db.utilData, payload)
-		
-		serverChannel.basic_consume(callback, queue=args.routingKey)
-		serverChannel.start_consuming()
-		
+		printMonitorOutput(db.utilData, payload)
 		GPIO.cleanup()
 
 	except KeyboardInterrupt:
