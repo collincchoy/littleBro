@@ -17,7 +17,6 @@ def getUtil(last_idle, last_total):
 			fields = [float(column) for column in f.readline().strip().split()[1:]]
 	idle, total = fields[3], sum(fields)
 	idle_delta, total_delta = idle - last_idle, total - last_total
-	#last_idle, last_total = idle, total
 	utilization = (1.0 - idle_delta / total_delta)
 	return utilization, idle, total
 
@@ -52,13 +51,26 @@ def main():
 	last_idle, last_total = fields[3], sum(fields)
 	last_netStats = readNetDev(procNetDev)
 
+	# Set startTime for 1 second time delays
 	startTime = time.time()
 
 	# Set up connection to send data to repository RabbitMQ queue
 	login, password = args.credentials.split(":")
 	serverCredentials = pika.PlainCredentials(login, password)
 	serverParameters = pika.ConnectionParameters(args.messageBroker, 5672, args.virtualHost, serverCredentials)
-	serverConnection = pika.BlockingConnection(serverParameters)
+
+	try:
+		serverConnection = pika.BlockingConnection(serverParameters)
+	except (pika.exceptions.ProbableAuthenticationError, pika.exceptions.ProbableAccessDeniedError, pika.exceptions.ConnectionClosed) as e:
+		if type(e) is pika.exceptions.ProbableAuthenticationError:
+			print('Error: Invalid login credentials to the RabbitMQ broker. Exiting...')
+		elif type(e) is pika.exceptions.ProbableAccessDeniedError:
+			print('Error: Failed to connect to RabbitMQ broker. Likely invalid virtual host. Exiting...')
+		elif type(e) is pika.exceptions.ConnectionClosed:
+			print('Error: Failed to connect to RabbitMQ broker. RabbitMQ connection is closed on given message broker.')
+		procNetDev.close()
+		return
+
 	serverChannel = serverConnection.channel()
 	serverChannel.queue_declare(queue=args.routingKey)
 	serverChannel.exchange_declare(exchange='pi_utilization', type='direct')
@@ -78,7 +90,11 @@ def main():
 
 			# Serialize as JSON
 			package = json.dumps({'net': netStats_delta, 'cpu': util})
-			serverChannel.basic_publish(exchange='pi_utilization', routing_key=args.routingKey, body=package)
+			try:
+				serverChannel.basic_publish(exchange='pi_utilization', routing_key=args.routingKey, body=package)
+			except pika.exceptions.ConnectionClosed:
+				print('Error: RabbitMQ connection was closed. Exiting... ')
+				break
 		except KeyboardInterrupt:
 			break
 	procNetDev.close()
