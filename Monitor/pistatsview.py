@@ -3,6 +3,7 @@ import argparse
 import json
 import sys
 from pymongo import MongoClient
+from pymongo import errors
 import RPi.GPIO as GPIO
 import pika
 import time
@@ -21,11 +22,6 @@ def dbGetDocumentFromCollectionByPeaks(collection, field):
 		return collection.find_one(sort=[(field, -1)], projection={field: 1})[splitFields[0]][splitFields[1]][splitFields[2]], collection.find_one(sort=[(field, 1)], projection={field: 1})[splitFields[0]][splitFields[1]][splitFields[2]]
 	elif len(splitFields) == 1:
 		return collection.find_one(sort=[(field, -1)], projection={field: 1})[field], collection.find_one(sort=[(field, 1)], projection={field: 1})[field]
-
-# TODO
-def consumeFromQueue():
-	fake_data = {'net': {'eth0': {'tx': 0, 'rx': 0}, 'wlan0': {'tx': 230, 'rx': 1201}, 'lo': {'tx': 0, 'rx': 0}}, 'cpu': 0.00497512437810943}
-	return json.dumps(fake_data)
 
 def printMonitorOutput(dbCollection, payload):
 	cpuMax, cpuMin = dbGetDocumentFromCollectionByPeaks(dbCollection, 'cpu')
@@ -80,31 +76,49 @@ def main():
 		# Setup
 		args = getClaOptions()
 		initGpio()
-		db = MongoClient()
-		if db is None:
-			GPIO.cleanup()
-			print('Error: Failed to connect to database.')
-			return
+		db = MongoClient() # Get Mongo client
 		db = db.assignment2_db
 		
-		# Set up connection to send data to repository RabbitMQ queue
+		# Set up connection to RabbitMQ broker
 		login, password = args.credentials.split(":")
 		serverCredentials = pika.PlainCredentials(login, password)
 		serverParameters = pika.ConnectionParameters(args.messageBroker, 5672, args.virtualHost, serverCredentials)
-		serverConnection = pika.BlockingConnection(serverParameters)
+		try:
+			serverConnection = pika.BlockingConnection(serverParameters)
+		except (pika.exceptions.ProbableAuthenticationError, pika.exceptions.ProbableAccessDeniedError, pika.exceptions.ConnectionClosed) as e:
+			GPIO.cleanup()
+			if type(e) == pika.exceptions.ProbableAuthenticationError:
+				print("Error: Invalid Username or Password. Exiting...")
+			elif type(e) == pika.exceptions.ProbableAccessDeniedError:
+				print("Error: Invalid virtual host name. Exiting...")
+			else:
+				print("Error: Bad IP address for MessageBroker. Exiting...")
+			return
 		serverChannel = serverConnection.channel()
 		serverChannel.queue_declare(queue=args.routingKey)
 		serverChannel.exchange_declare(exchange='pi_utilization', type='direct')
 		serverChannel.queue_bind(exchange='pi_utilization', queue=args.routingKey)
 		
+		# Callback to be called on message consumption	
 		def callback(serverChannel, method, properties, body):
 			payload = json.loads(body.decode('utf-8'))
 			db.utilData.insert(payload)
 			changeThresholdLed(payload['cpu'])
 			printMonitorOutput(db.utilData, payload)
 		
+		# Consume from the message queue
 		serverChannel.basic_consume(callback, queue=args.routingKey)
-		serverChannel.start_consuming()
+		try: 
+			serverChannel.start_consuming()
+		except (pika.exceptions.ConnectionClosed, errors.ServerSelectionTimeoutError, errors.AutoReconnect) as e:
+			GPIO.cleanup()
+			if type(e) == pika.exceptions.ConnectionClosed:
+				print("Error: RabbitMQ connection closed.  Exiting...")
+			elif type(e) == errors.AutoReconnect:
+				print("Error: Lost connection with MongoDB. Exiting...")
+			else:
+				print("Error: Cannot connect to MongoDB. Exiting...")
+			return
 		
 		GPIO.cleanup()
 
