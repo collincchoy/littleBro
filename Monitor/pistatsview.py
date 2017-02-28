@@ -49,7 +49,6 @@ def initGpio():
 	GPIO.output(23, GPIO.LOW)
 	GPIO.output(24, GPIO.LOW)
 
-
 def setLedColor(color):
 	if color == 'r':
 		GPIO.output(18, GPIO.HIGH)
@@ -68,7 +67,6 @@ def setLedColor(color):
 		GPIO.output(23, GPIO.LOW)
 		GPIO.output(24, GPIO.HIGH)
 
-# TODO
 def changeThresholdLed(currentCpuUtil):
 	if currentCpuUtil < 0.25:
 		setLedColor('g')
@@ -80,9 +78,13 @@ def changeThresholdLed(currentCpuUtil):
 def main():
 	try:
 		# Setup
+		args = getClaOptions()
 		initGpio()
 		db = MongoClient().assignment2_db
-		args = getClaOptions()
+		if db is None:
+			GPIO.cleanup()
+			print('Error: Failed to connect to database.')
+			return
 		
 		# Set up connection to send data to repository RabbitMQ queue
 		login, password = args.credentials.split(":")
@@ -95,11 +97,9 @@ def main():
 		serverChannel.queue_bind(exchange='pi_utilization', queue=args.routingKey)
 		
 		def callback(serverChannel, method, properties, body):
-			
 			payload = json.loads(body.decode('utf-8'))
 			db.utilData.insert(payload)
 			changeThresholdLed(payload['cpu'])
-
 			printMonitorOutput(db.utilData, payload)
 		
 		serverChannel.basic_consume(callback, queue=args.routingKey)
