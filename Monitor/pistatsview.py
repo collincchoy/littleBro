@@ -80,11 +80,12 @@ def main():
 		# Setup
 		args = getClaOptions()
 		initGpio()
-		db = MongoClient().assignment2_db
+		db = MongoClient()
 		if db is None:
 			GPIO.cleanup()
 			print('Error: Failed to connect to database.')
 			return
+		db = db.assignment2_db
 		
 		# Set up connection to send data to repository RabbitMQ queue
 		login, password = args.credentials.split(":")
